@@ -158,79 +158,79 @@
 
 
 
-
+##################-----Drive Detection------!|!!!!|!|!!!
 
 
 import os
+import subprocess
 import streamlit as st
-import sys
+from core.drives import list_folders  # your existing function
 
-# Only import Windows modules if running on Windows
-if sys.platform == "win32":
-    import win32net
-    import win32netcon
-    import ctypes
-    import string
 
-    def get_drives():
-        drives = []
-        bitmask = ctypes.windll.kernel32.GetLogicalDrives()
-        for i in range(26):
-            if bitmask & (1 << i):
-                drives.append(f"{string.ascii_uppercase[i]}:\\")
-        return drives
+# ✅ WMIC-based drive detection (local + removable + mapped network drives)
+def get_drives():
+    drives = []
+    try:
+        result = subprocess.check_output(
+            ["wmic", "logicaldisk", "get", "name,drivetype"],
+            shell=True,
+            text=True
+        )
+        lines = result.splitlines()
+        for line in lines:
+            parts = line.strip().split()
+            if len(parts) == 2 and parts[0] != "Name":
+                name, dtype = parts
+                if os.path.exists(name + "\\"):
+                    drives.append(name + "\\")
+    except Exception as e:
+        print("Failed to get drives:", e)
+    return drives
 
-    def list_network_servers():
-        servers = []
-        try:
-            result, _, _ = win32net.NetServerEnum(None, 100, win32netcon.SV_TYPE_SERVER, None, 0)
-            for s in result:
-                servers.append(s['name'])
-        except Exception as e:
-            print("Cannot enumerate servers:", e)
-        return servers
 
-    def list_shares(server):
-        shares = []
-        try:
-            result, _, _ = win32net.NetShareEnum(server, 2)
-            for share in result:
-                if share['type'] == win32netcon.STYPE_DISKDEV:
-                    path = rf"\\{server}\{share['netname']}"
-                    if os.path.exists(path):
-                        shares.append(path)
-        except Exception as e:
-            print(f"Cannot enumerate shares on {server}: {e}")
-        return shares
+# ✅ Discover shares on a network server using "net view"
+def list_network_shares(server):
+    shares = []
+    try:
+        result = subprocess.check_output(
+            ["net", "view", fr"\\{server}"],
+            shell=True,
+            text=True
+        )
+        for line in result.splitlines():
+            if line.strip() and "Disk" in line:
+                parts = line.split()
+                share_name = parts[0]
+                shares.append(fr"\\{server}\{share_name}")
+    except Exception as e:
+        print(f"Cannot access {server}: {e}")
+    return shares
 
-    def list_all_network_shares():
-        shares = []
-        for server in list_network_servers():
-            shares.extend(list_shares(server))
-        return shares
 
-else:
-    # Linux / Mac fallback
-    def get_drives():
-        # On Linux/Mac, return root "/" as default
-        return ["/"]
-
-    def list_all_network_shares():
-        return []
-
-# Common function for both platforms
+# ✅ Streamlit UI
 def drive_and_folder_selector():
     st.subheader("Step 1: Select Drive")
-    drives = get_drives()
-    
-    selected_drive = st.selectbox("Select Drive:", drives, key="drive_select")
 
+    # 1) Local + mapped drives
+    drives = get_drives()
+
+    # 2) Add network shares (Kakapo + Casuar for now)
+    for server in ["kakapo", "casuar"]:
+        drives.extend(list_network_shares(server))
+
+    # 3) Select drive/share
+    if drives:
+        selected_drive = st.selectbox("Select Drive:", drives, key="drive_select")
+    else:
+        st.warning("No drives or network shares available.")
+        return None
+
+    # 4) Browse folders
     current_path = None
     if selected_drive:
         st.subheader("Step 2: Browse Folders")
         current_path = selected_drive
         while True:
-            from core.drives import list_folders  # safe import
             folders = list_folders(current_path)
             if not folders:
                 break
